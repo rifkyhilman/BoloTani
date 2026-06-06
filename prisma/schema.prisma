@@ -1,0 +1,462 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+enum Role {
+  PETANI
+  ADMIN
+  GUDANG
+}
+
+enum StatusKYC {
+  BELUM_VERIFIKASI
+  MENUNGGU_REVIEW
+  DISETUJUI
+  DITOLAK
+}
+
+enum StatusListing {
+  DRAFT
+  AKTIF
+  DIPESAN
+  DISETOR
+  SELESAI
+  DIBATALKAN
+}
+
+enum MetodePengantaran {
+  ANTAR_SENDIRI
+  DIJEMPUT_PLATFORM
+}
+
+enum StatusTiket {
+  MENUNGGU_JADWAL
+  DIJADWALKAN
+  DALAM_PENGIRIMAN
+  DITERIMA_GUDANG
+  QC_SELESAI
+  MENUNGGU_VERIFIKASI
+  DIBAYARKAN
+  SELESAI
+  DIBATALKAN
+}
+
+enum GradeKualitas {
+  A
+  B
+  C
+  D
+}
+
+enum TipeTransaksiWallet {
+  KREDIT
+  DEBIT
+}
+
+enum StatusWithdrawal {
+  PENDING
+  DIPROSES
+  BERHASIL
+  GAGAL
+}
+
+enum TipeNotifikasi {
+  KYC_DISETUJUI
+  KYC_DITOLAK
+  TIKET_STATUS_BERUBAH
+  PEMBAYARAN_MASUK
+  WITHDRAWAL_DIPROSES
+  WITHDRAWAL_BERHASIL
+  WITHDRAWAL_GAGAL
+  HARGA_BERUBAH
+  PENGUMUMAN
+}
+
+// ============================================================
+// USER & PROFILE
+// ============================================================
+
+model User {
+  id            String    @id @default(cuid())
+  nomor_hp      String    @unique
+  password_hash String
+  role          Role      @default(PETANI)
+  status_kyc    StatusKYC @default(BELUM_VERIFIKASI)
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+
+  // Relations
+  profile       UserProfile?
+  listings      Listing[]
+  tikets        Tiket[]
+  wallet        Wallet?
+  notifikasi    Notifikasi[]
+  audit_logs    AuditLog[]
+
+  // Admin relations
+  kyc_reviews_dilakukan   UserProfile[] @relation("KYCReviewer")
+  harga_diupdate          HargaHarian[] @relation("HargaUpdater")
+  tiket_diverifikasi      Tiket[]       @relation("TiketVerifikator")
+  withdrawal_diapprove    Withdrawal[]  @relation("WithdrawalApprover")
+  qc_dilakukan            QCRecord[]    @relation("QCPetugas")
+  tiket_dijadwalkan       Tiket[]       @relation("TiketPenjadwal")
+
+  @@map("users")
+}
+
+model UserProfile {
+  id              String    @id @default(cuid())
+  user_id         String    @unique
+  nama_lengkap    String
+  nik             String?   // AES-256 encrypted at app level
+  alamat          String?
+  kota            String?
+  provinsi        String?
+  foto_profil_url String?
+  foto_ktp_url    String?
+  foto_selfie_url String?
+  farm_lat        Decimal?  @db.Decimal(10, 8)
+  farm_lng        Decimal?  @db.Decimal(11, 8)
+  catatan_kyc     String?   // Alasan ditolak / catatan admin
+  reviewed_at     DateTime?
+  reviewed_by     String?   // user_id admin
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+
+  // Relations
+  user            User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  reviewer        User?     @relation("KYCReviewer", fields: [reviewed_by], references: [id])
+  bank_accounts   BankAccount[]
+
+  @@map("user_profiles")
+}
+
+model BankAccount {
+  id              String      @id @default(cuid())
+  profile_id      String
+  nama_bank       String
+  nomor_rekening  String      // AES-256 encrypted at app level
+  nama_pemilik    String
+  is_default      Boolean     @default(false)
+  created_at      DateTime    @default(now())
+  updated_at      DateTime    @updatedAt
+
+  // Relations
+  profile         UserProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+  withdrawals     Withdrawal[]
+
+  @@map("bank_accounts")
+}
+
+// ============================================================
+// MASTER DATA KOMODITAS
+// ============================================================
+
+model Komoditas {
+  id          String      @id @default(cuid())
+  nama        String      @unique
+  kategori    String
+  satuan      String      @default("kg") // kg / ton
+  foto_url    String?
+  is_aktif    Boolean     @default(true)
+  created_at  DateTime    @default(now())
+  updated_at  DateTime    @updatedAt
+
+  // Relations
+  varietas    Varietas[]
+  harga_harian HargaHarian[]
+  listings    Listing[]
+
+  @@map("komoditas")
+}
+
+model Varietas {
+  id            String      @id @default(cuid())
+  komoditas_id  String
+  nama          String
+  is_aktif      Boolean     @default(true)
+  created_at    DateTime    @default(now())
+  updated_at    DateTime    @updatedAt
+
+  // Relations
+  komoditas     Komoditas   @relation(fields: [komoditas_id], references: [id], onDelete: Cascade)
+  harga_harian  HargaHarian[]
+  listings      Listing[]
+
+  @@unique([komoditas_id, nama])
+  @@map("varietas")
+}
+
+model HargaHarian {
+  id              String      @id @default(cuid())
+  komoditas_id    String
+  varietas_id     String?
+  wilayah         String      // Kota / Provinsi / Region
+  harga_per_kg    Decimal     @db.Decimal(12, 2)
+  tanggal_berlaku DateTime    @db.Date
+  is_aktif        Boolean     @default(true)
+  updated_by      String      // user_id admin
+  created_at      DateTime    @default(now())
+  updated_at      DateTime    @updatedAt
+
+  // Relations
+  komoditas       Komoditas   @relation(fields: [komoditas_id], references: [id])
+  varietas        Varietas?   @relation(fields: [varietas_id], references: [id])
+  updater         User        @relation("HargaUpdater", fields: [updated_by], references: [id])
+  log_harga       LogHarga[]
+
+  // Satu harga aktif per kombinasi per hari
+  @@unique([komoditas_id, varietas_id, wilayah, tanggal_berlaku])
+  @@map("harga_harian")
+}
+
+model LogHarga {
+  id              String      @id @default(cuid())
+  harga_harian_id String
+  harga_lama      Decimal     @db.Decimal(12, 2)
+  harga_baru      Decimal     @db.Decimal(12, 2)
+  changed_by      String      // user_id
+  created_at      DateTime    @default(now())
+
+  // Relations
+  harga_harian    HargaHarian @relation(fields: [harga_harian_id], references: [id])
+
+  @@map("log_harga")
+}
+
+// ============================================================
+// GRADE CONFIG (Dikonfigurasi Admin)
+// ============================================================
+
+model GradeConfig {
+  id          String        @id @default(cuid())
+  grade       GradeKualitas
+  faktor      Decimal       @db.Decimal(5, 4) // e.g. 1.0000, 0.8500, 0.7000
+  deskripsi   String?
+  is_aktif    Boolean       @default(true)
+  created_at  DateTime      @default(now())
+  updated_at  DateTime      @updatedAt
+
+  @@unique([grade])
+  @@map("grade_config")
+}
+
+// ============================================================
+// LISTING HASIL PANEN
+// ============================================================
+
+model Listing {
+  id              String        @id @default(cuid())
+  petani_id       String
+  komoditas_id    String
+  varietas_id     String?
+  estimasi_qty_kg Decimal       @db.Decimal(10, 2)
+  foto_urls       String[]      // Array of storage URLs
+  tanggal_panen   DateTime      @db.Date
+  catatan         String?
+  status          StatusListing @default(DRAFT)
+  created_at      DateTime      @default(now())
+  updated_at      DateTime      @updatedAt
+
+  // Relations
+  petani          User          @relation(fields: [petani_id], references: [id])
+  komoditas       Komoditas     @relation(fields: [komoditas_id], references: [id])
+  varietas        Varietas?     @relation(fields: [varietas_id], references: [id])
+  tikets          Tiket[]
+
+  @@map("listings")
+}
+
+// ============================================================
+// DROP-OFF TICKET (TIKET SETOR)
+// ============================================================
+
+model Tiket {
+  id                  String            @id @default(cuid())
+  kode_tiket          String            @unique // DT-YYYYMMDD-XXXX
+  listing_id          String
+  petani_id           String
+  harga_per_kg_locked Decimal           @db.Decimal(12, 2) // Harga saat tiket dibuat
+  estimasi_pembayaran Decimal           @db.Decimal(14, 2)
+  metode_pengantaran  MetodePengantaran
+  tanggal_pengantaran DateTime          @db.Date
+  status              StatusTiket       @default(MENUNGGU_JADWAL)
+  catatan_pembatalan  String?
+  dijadwalkan_oleh    String?           // user_id admin
+  dijadwalkan_at      DateTime?
+  diverifikasi_oleh   String?           // user_id admin
+  diverifikasi_at     DateTime?
+  catatan_verifikasi  String?
+  created_at          DateTime          @default(now())
+  updated_at          DateTime          @updatedAt
+
+  // Relations
+  listing             Listing           @relation(fields: [listing_id], references: [id])
+  petani              User              @relation(fields: [petani_id], references: [id])
+  penjadwal           User?             @relation("TiketPenjadwal", fields: [dijadwalkan_oleh], references: [id])
+  verifikator         User?             @relation("TiketVerifikator", fields: [diverifikasi_oleh], references: [id])
+  qc_record           QCRecord?
+  transaksi_wallet    TransaksiWallet?
+  status_logs         TiketStatusLog[]
+
+  @@map("tikets")
+}
+
+model TiketStatusLog {
+  id          String      @id @default(cuid())
+  tiket_id    String
+  status_lama StatusTiket?
+  status_baru StatusTiket
+  catatan     String?
+  changed_by  String?     // user_id (null = system)
+  created_at  DateTime    @default(now())
+
+  // Relations
+  tiket       Tiket       @relation(fields: [tiket_id], references: [id])
+
+  @@map("tiket_status_logs")
+}
+
+// ============================================================
+// QC RECORD (TIM GUDANG)
+// ============================================================
+
+model QCRecord {
+  id              String        @id @default(cuid())
+  tiket_id        String        @unique
+  berat_aktual_kg Decimal       @db.Decimal(10, 2)
+  grade           GradeKualitas
+  foto_urls       String[]
+  catatan         String?
+  pembayaran_final Decimal      @db.Decimal(14, 2)
+  faktor_grade    Decimal       @db.Decimal(5, 4)
+  diterima_oleh   String        // user_id tim gudang
+  is_ditolak      Boolean       @default(false)
+  alasan_penolakan String?
+  created_at      DateTime      @default(now())
+  // Immutable after creation — amendments by admin via AuditLog
+
+  // Relations
+  tiket           Tiket         @relation(fields: [tiket_id], references: [id])
+  petugas         User          @relation("QCPetugas", fields: [diterima_oleh], references: [id])
+
+  @@map("qc_records")
+}
+
+// ============================================================
+// WALLET & TRANSAKSI
+// ============================================================
+
+model Wallet {
+  id                String            @id @default(cuid())
+  user_id           String            @unique
+  saldo_available   Decimal           @default(0) @db.Decimal(14, 2)
+  saldo_pending     Decimal           @default(0) @db.Decimal(14, 2)
+  total_earned      Decimal           @default(0) @db.Decimal(14, 2)
+  created_at        DateTime          @default(now())
+  updated_at        DateTime          @updatedAt
+
+  // Relations
+  user              User              @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  transaksi         TransaksiWallet[]
+  withdrawals       Withdrawal[]
+
+  @@map("wallets")
+}
+
+model TransaksiWallet {
+  id              String              @id @default(cuid())
+  wallet_id       String
+  tipe            TipeTransaksiWallet
+  nominal         Decimal             @db.Decimal(14, 2)
+  saldo_sebelum   Decimal             @db.Decimal(14, 2)
+  saldo_sesudah   Decimal             @db.Decimal(14, 2)
+  keterangan      String?
+  referensi_tipe  String?             // "TIKET" | "WITHDRAWAL"
+  referensi_id    String?             // ID tiket atau withdrawal
+  tiket_id        String?             @unique
+  created_at      DateTime            @default(now())
+
+  // Relations
+  wallet          Wallet              @relation(fields: [wallet_id], references: [id])
+  tiket           Tiket?              @relation(fields: [tiket_id], references: [id])
+
+  @@map("transaksi_wallet")
+}
+
+model Withdrawal {
+  id              String            @id @default(cuid())
+  wallet_id       String
+  nominal         Decimal           @db.Decimal(14, 2)
+  bank_account_id String
+  status          StatusWithdrawal  @default(PENDING)
+  catatan_admin   String?
+  approved_by     String?           // user_id admin
+  approved_at     DateTime?
+  pg_reference    String?           // Payment gateway reference ID
+  created_at      DateTime          @default(now())
+  updated_at      DateTime          @updatedAt
+
+  // Relations
+  wallet          Wallet            @relation(fields: [wallet_id], references: [id])
+  bank_account    BankAccount       @relation(fields: [bank_account_id], references: [id])
+  approver        User?             @relation("WithdrawalApprover", fields: [approved_by], references: [id])
+
+  @@map("withdrawals")
+}
+
+// ============================================================
+// NOTIFIKASI
+// ============================================================
+
+model Notifikasi {
+  id          String          @id @default(cuid())
+  user_id     String
+  tipe        TipeNotifikasi
+  judul       String
+  pesan       String
+  referensi   String?         // ID tiket / withdrawal dll.
+  is_read     Boolean         @default(false)
+  created_at  DateTime        @default(now())
+
+  // Relations
+  user        User            @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id, is_read])
+  @@map("notifikasi")
+}
+
+// ============================================================
+// AUDIT LOG (Immutable)
+// ============================================================
+
+model AuditLog {
+  id            String    @id @default(cuid())
+  user_id       String?   // null = system action
+  aksi          String    // e.g. "KYC_APPROVED", "HARGA_UPDATED", "TIKET_STATUS_CHANGED"
+  entitas_tipe  String    // e.g. "UserProfile", "HargaHarian", "Tiket"
+  entitas_id    String
+  nilai_lama    Json?
+  nilai_baru    Json?
+  ip_address    String?
+  user_agent    String?
+  created_at    DateTime  @default(now())
+
+  // Relations
+  user          User?     @relation(fields: [user_id], references: [id])
+
+  @@index([entitas_tipe, entitas_id])
+  @@index([user_id])
+  @@map("audit_logs")
+}

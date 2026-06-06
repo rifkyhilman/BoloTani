@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: bolotani_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bolotani_user
+      POSTGRES_PASSWORD: bolotani_secret
+      POSTGRES_DB: bolotani_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
